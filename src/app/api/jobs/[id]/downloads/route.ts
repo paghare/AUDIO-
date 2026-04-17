@@ -9,8 +9,9 @@ import { getDownloadPresignedUrl } from "@/lib/s3/client";
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const { id } = await params;
   const { userId: clerkId } = await auth();
   if (!clerkId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -18,7 +19,7 @@ export async function GET(
   if (!user) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const job = await prisma.job.findFirst({
-    where: { id: params.id, userId: user.id },
+    where: { id, userId: user.id },
     include: { outputs: true, upload: true },
   });
 

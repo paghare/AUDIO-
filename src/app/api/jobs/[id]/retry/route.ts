@@ -9,8 +9,9 @@ import { PLAN_LIMITS } from "@/types";
 
 export async function POST(
   _req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const { id } = await params;
   const { userId: clerkId } = await auth();
   if (!clerkId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -18,7 +19,7 @@ export async function POST(
   if (!user) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const job = await prisma.job.findFirst({
-    where: { id: params.id, userId: user.id },
+    where: { id, userId: user.id },
     include: { upload: true, settings: true },
   });
 
