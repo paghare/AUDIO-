@@ -1,17 +1,5 @@
-import { Queue, Worker, QueueEvents } from "bullmq";
+import { Queue } from "bullmq";
 import IORedis from "ioredis";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Redis connection
-// ─────────────────────────────────────────────────────────────────────────────
-export function createRedisConnection() {
-  return new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379", {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-  });
-}
-
-const connection = createRedisConnection();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Queue names
@@ -23,37 +11,92 @@ export const QUEUE_NAMES = {
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Queues
+// Lazy singleton connection — only created when first used (not at build time)
 // ─────────────────────────────────────────────────────────────────────────────
-export const uploadProcessingQueue = new Queue(QUEUE_NAMES.UPLOAD_PROCESSING, {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 5000 },
-    removeOnComplete: { count: 100 },
-    removeOnFail: { count: 200 },
-  },
-});
+let _connection: IORedis | null = null;
 
-export const transcriptQueue = new Queue(QUEUE_NAMES.TRANSCRIPT_GENERATION, {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 5000 },
-    removeOnComplete: { count: 100 },
-    removeOnFail: { count: 200 },
-  },
-});
+export function getRedisConnection(): IORedis {
+  if (!_connection) {
+    _connection = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379", {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    });
+  }
+  return _connection;
+}
 
-export const exportRenderQueue = new Queue(QUEUE_NAMES.EXPORT_RENDER, {
-  connection,
-  defaultJobOptions: {
-    attempts: 2,
-    backoff: { type: "exponential", delay: 3000 },
-    removeOnComplete: { count: 50 },
-    removeOnFail: { count: 100 },
-  },
-});
+// For backwards-compat with workers
+export function createRedisConnection() {
+  return new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379", {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lazy queue singletons
+// ─────────────────────────────────────────────────────────────────────────────
+let _uploadProcessingQueue: Queue | null = null;
+let _transcriptQueue: Queue | null = null;
+let _exportRenderQueue: Queue | null = null;
+
+export function getUploadProcessingQueue(): Queue {
+  if (!_uploadProcessingQueue) {
+    _uploadProcessingQueue = new Queue(QUEUE_NAMES.UPLOAD_PROCESSING, {
+      connection: getRedisConnection(),
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5000 },
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 200 },
+      },
+    });
+  }
+  return _uploadProcessingQueue;
+}
+
+export function getTranscriptQueue(): Queue {
+  if (!_transcriptQueue) {
+    _transcriptQueue = new Queue(QUEUE_NAMES.TRANSCRIPT_GENERATION, {
+      connection: getRedisConnection(),
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5000 },
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 200 },
+      },
+    });
+  }
+  return _transcriptQueue;
+}
+
+export function getExportRenderQueue(): Queue {
+  if (!_exportRenderQueue) {
+    _exportRenderQueue = new Queue(QUEUE_NAMES.EXPORT_RENDER, {
+      connection: getRedisConnection(),
+      defaultJobOptions: {
+        attempts: 2,
+        backoff: { type: "exponential", delay: 3000 },
+        removeOnComplete: { count: 50 },
+        removeOnFail: { count: 100 },
+      },
+    });
+  }
+  return _exportRenderQueue;
+}
+
+// Backwards-compat named exports (lazy proxies)
+export const uploadProcessingQueue = {
+  add: (...args: Parameters<Queue["add"]>) => getUploadProcessingQueue().add(...args),
+};
+
+export const transcriptQueue = {
+  add: (...args: Parameters<Queue["add"]>) => getTranscriptQueue().add(...args),
+};
+
+export const exportRenderQueue = {
+  add: (...args: Parameters<Queue["add"]>) => getExportRenderQueue().add(...args),
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Job payload types
@@ -82,13 +125,13 @@ export interface ExportJobPayload {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Enqueue a new processing job
+// Enqueue helpers
 // ─────────────────────────────────────────────────────────────────────────────
 export async function enqueueProcessingJob(
   payload: ProcessingJobPayload,
   priority: number = 10,
 ) {
-  const job = await uploadProcessingQueue.add("process", payload, {
+  const job = await getUploadProcessingQueue().add("process", payload, {
     priority,
     jobId: `proc-${payload.jobId}`,
   });
@@ -96,7 +139,7 @@ export async function enqueueProcessingJob(
 }
 
 export async function enqueueTranscriptJob(payload: TranscriptJobPayload) {
-  const job = await transcriptQueue.add("transcribe", payload, {
+  const job = await getTranscriptQueue().add("transcribe", payload, {
     jobId: `trans-${payload.jobId}`,
   });
   return job.id;
