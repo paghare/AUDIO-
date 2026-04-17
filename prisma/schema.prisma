@@ -1,0 +1,275 @@
+// Audio Refinement + Transcript Platform
+// Prisma Schema — PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum Plan {
+  FREE
+  PRO
+  PREMIUM
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  TRIALING
+  INCOMPLETE
+}
+
+enum JobStatus {
+  UPLOADED
+  QUEUED
+  PROCESSING
+  TRANSCRIBING
+  COMPLETED
+  FAILED
+}
+
+enum QualityMode {
+  FAST       // FFmpeg DSP only
+  PRO        // Neural denoise + DSP
+  PREMIUM    // Advanced restoration pipeline
+}
+
+enum Preset {
+  VOICE_CLEANER
+  VOICE_CLEANER_KEEP_MUSIC
+  VOICE_CLEANER_REMOVE_BREATHS
+  VOICE_CLEANER_REMOVE_MUSIC
+  TRANSCRIPT_ONLY
+  MASTERING_ONLY
+}
+
+enum LoudnessTarget {
+  APPLE_PODCASTS   // -16 LUFS
+  SPOTIFY          // -14 LUFS
+  YOUTUBE          // -14 LUFS
+  BROADCAST        // -23 LUFS
+  MOBILE           // -19 LUFS
+}
+
+enum OutputType {
+  AUDIO_MASTERED
+  VIDEO_PROCESSED
+  TRANSCRIPT_TXT
+  TRANSCRIPT_SRT
+  TRANSCRIPT_VTT
+  WAVEFORM_JSON
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Users & Auth
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id             String   @id @default(cuid())
+  clerkId        String   @unique
+  email          String   @unique
+  name           String?
+  avatarUrl      String?
+  plan           Plan     @default(FREE)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime? // GDPR soft-delete
+
+  subscription   Subscription?
+  uploads        Upload[]
+  jobs           Job[]
+  usageEvents    UsageEvent[]
+
+  @@index([clerkId])
+  @@map("users")
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  userId               String             @unique
+  stripeCustomerId     String             @unique
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  plan                 Plan               @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Uploads
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Upload {
+  id           String   @id @default(cuid())
+  userId       String
+  filename     String
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  durationSecs Float?
+  s3Key        String   @unique
+  s3Bucket     String
+  // FFprobe metadata
+  codec        String?
+  bitrate      Int?     // kbps
+  sampleRate   Int?
+  channels     Int?
+  isVideo      Boolean  @default(false)
+  // Lifecycle
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime? // auto-delete date
+  deletedAt    DateTime?
+
+  user User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobs Job[]
+
+  @@index([userId])
+  @@map("uploads")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Jobs
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Job {
+  id           String     @id @default(cuid())
+  userId       String
+  uploadId     String
+  status       JobStatus  @default(UPLOADED)
+  preset       Preset     @default(VOICE_CLEANER)
+  quality      QualityMode @default(FAST)
+  lufsTarget   LoudnessTarget @default(SPOTIFY)
+  // Loudness analysis
+  inputLufs    Float?
+  outputLufs   Float?
+  // Timing
+  queuedAt     DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  failedAt     DateTime?
+  // Error tracking
+  errorMessage String?
+  retryCount   Int        @default(0)
+  // BullMQ job reference
+  bullJobId    String?
+  // Timestamps
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  upload     Upload      @relation(fields: [uploadId], references: [id])
+  settings   JobSettings?
+  outputs    Output[]
+  transcript Transcript?
+
+  @@index([userId, status])
+  @@index([uploadId])
+  @@map("jobs")
+}
+
+model JobSettings {
+  id              String  @id @default(cuid())
+  jobId           String  @unique
+  // Enhancement toggles
+  denoise         Boolean @default(true)
+  removeBreaths   Boolean @default(false)
+  removeMusic     Boolean @default(false)
+  keepMusicSfx    Boolean @default(false)
+  deEss           Boolean @default(true)
+  normalize       Boolean @default(true)
+  // EQ / DSP
+  eqBoostPresence Boolean @default(false)
+  eqCutRumble     Boolean @default(true)
+  // Advanced
+  vocalIsolation  Boolean @default(false)
+  speakerDiarize  Boolean @default(false)
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@map("job_settings")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Outputs
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Output {
+  id         String     @id @default(cuid())
+  jobId      String
+  type       OutputType
+  s3Key      String     @unique
+  s3Bucket   String
+  sizeBytes  Int?
+  mimeType   String?
+  durationSecs Float?
+  createdAt  DateTime   @default(now())
+  expiresAt  DateTime?
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@map("outputs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Transcripts
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Transcript {
+  id           String   @id @default(cuid())
+  jobId        String   @unique
+  language     String   @default("en")
+  // Plain text content
+  plainText    String?  @db.Text
+  // Structured segments with timestamps (JSON)
+  segments     Json?
+  // Word-level timestamps (JSON)
+  wordTimings  Json?
+  // Speaker labels (Phase 3)
+  speakers     Json?
+  // Model used
+  modelName    String?  @default("whisper-base")
+  createdAt    DateTime @default(now())
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@map("transcripts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Usage & Billing Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UsageEvent {
+  id           String   @id @default(cuid())
+  userId       String
+  jobId        String?
+  eventType    String   // "job_completed", "job_failed", "upload", etc.
+  minutesUsed  Float    @default(0)
+  plan         Plan
+  qualityTier  QualityMode?
+  billingPeriod String? // "2024-01" format
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, billingPeriod])
+  @@map("usage_events")
+}
