@@ -6,7 +6,7 @@ import { formatBytes, formatDuration, formatRelativeTime, statusColor } from "@/
 import { PRESET_LABELS, QUALITY_LABELS, LOUDNESS_LABELS } from "@/types";
 import {
   Download, RefreshCw, Trash2, Loader, CheckCircle,
-  AlertCircle, Clock, Waveform, FileText, FileVideo, FileAudio,
+  AlertCircle, Clock, Radio, FileText, FileVideo, FileAudio,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import type { ApiOutput } from "@/types";
